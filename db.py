@@ -1,29 +1,41 @@
 import sqlite3
-from datetime import datetime 
+from datetime import datetime
 
 DB_NAME = "monitor.db"
 
-def get_conn():
+
+def get_connection():
     return sqlite3.connect(DB_NAME)
 
 
 def init_db():
-    conn = get_conn()
+    conn = get_connection()
     cursor = conn.cursor()
 
-
-    # Table 1: monitored URLs
+    # clients
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS monitored_urls (
+        CREATE TABLE IF NOT EXISTS clients (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT UNIQUE NOT NULL,
-            interval_sec INTEGER NOT NULL,
-            is_active BOOLEAN NOT NULL DEFAULT 1,
+            name TEXT UNIQUE NOT NULL,
             created_at TIMESTAMP NOT NULL
         )
     """)
 
-    # Table 2: latest URL status
+    # monitored urls
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS monitored_urls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            interval_sec INTEGER NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            created_at TIMESTAMP NOT NULL,
+            UNIQUE(client_id, url),
+            FOREIGN KEY (client_id) REFERENCES clients(id)
+        )
+    """)
+
+    # latest status (summary)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS url_status (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,75 +48,86 @@ def init_db():
         )
     """)
 
-
-    # Table 3 : Error events (only errors , no success)
+    # error evidence
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS error_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url_id INTEGER NOT NULL,
-        status_code INTEGER,
-        status_type TEXT NOT NULL,
-        occurred_at TIMESTAMP NOT NULL,
-        FOREIGN KEY (url_id) REFERENCES monitored_urls(id)
+        CREATE TABLE IF NOT EXISTS error_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url_id INTEGER NOT NULL,
+            status_code INTEGER,
+            status_type TEXT NOT NULL,
+            occurred_at TIMESTAMP NOT NULL,
+            FOREIGN KEY (url_id) REFERENCES monitored_urls(id)
         )
     """)
-
 
     conn.commit()
     conn.close()
 
 
-def add_monitored_url(url:str , interval_sec : int):
-    conn = get_conn()
+# ---- client ops ----
+def add_client(name: str):
+    conn = get_connection()
     cursor = conn.cursor()
-
     try:
         cursor.execute(
-            """
-            INSERT INTO monitored_urls (url, interval_sec, is_active, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (url, interval_sec, 1, datetime.utcnow())
+            "INSERT INTO clients (name, created_at) VALUES (?, ?)",
+            (name, datetime.utcnow())
         )
         conn.commit()
-        print(f"Added URL: {url}")
-
+        print(f"Added client: {name}")
     except sqlite3.IntegrityError:
-        print(f"URL already exists: {url}")
-
+        print(f"Client already exists: {name}")
     finally:
         conn.close()
 
 
+def get_client_id(name: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM clients WHERE name = ?", (name,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+# ---- url ops ----
+def add_monitored_url(client_id: int, url: str, interval_sec: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO monitored_urls
+            (client_id, url, interval_sec, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (client_id, url, interval_sec, datetime.utcnow())
+        )
+        conn.commit()
+        print(f"Added URL: {url}")
+    except sqlite3.IntegrityError:
+        print(f"URL already exists for this client: {url}")
+    finally:
+        conn.close()
+
 
 def get_active_urls():
-    conn = get_conn()
+    conn = get_connection()
     cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        SELECT id , url , interval_sec
+    cursor.execute("""
+        SELECT id, url, interval_sec
         FROM monitored_urls
-        WHERE is_Active = 1
-
-        """
-    )
-
+        WHERE is_active = 1
+    """)
     rows = cursor.fetchall()
     conn.close()
-
     return rows
 
 
-def upsert_url_status(
-    url_id: int,
-    status_code: int | None,
-    response_time_ms: float | None,
-    error: str | None
-):
-    conn = get_conn()
+# ---- status ops ----
+def upsert_url_status(url_id, status_code, response_time_ms, error):
+    conn = get_connection()
     cursor = conn.cursor()
-
     cursor.execute(
         """
         INSERT INTO url_status (url_id, status_code, response_time_ms, error, checked_at)
@@ -115,46 +138,22 @@ def upsert_url_status(
             error = excluded.error,
             checked_at = excluded.checked_at
         """,
-        (
-            url_id,
-            status_code,
-            response_time_ms,
-            error,
-            datetime.utcnow()
-        )
+        (url_id, status_code, response_time_ms, error, datetime.utcnow())
     )
-
     conn.commit()
     conn.close()
 
 
-def insert_error_event(
-    url_id: int,
-    status_code: int | None,
-    status_type: str
-):
-    conn = get_conn()
+def insert_error_event(url_id, status_code, status_type):
+    conn = get_connection()
     cursor = conn.cursor()
-
     cursor.execute(
         """
-        INSERT INTO error_events (url_id, status_code, status_type, occurred_at)
+        INSERT INTO error_events
+        (url_id, status_code, status_type, occurred_at)
         VALUES (?, ?, ?, ?)
         """,
         (url_id, status_code, status_type, datetime.utcnow())
     )
-
     conn.commit()
     conn.close()
-
-
-
-if __name__ == "__main__":
-    init_db()
-    
-
-    urls = get_active_urls()
-    if urls :
-        url_id, url , _ = urls[0]
-        upsert_url_status(url_id,200,123.45,None)
-        print("Status stored for :" , url)
