@@ -221,3 +221,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+reports/
+*.csv
+*.xlsx
